@@ -23,6 +23,12 @@ void MergeTreeBlockOutputStream::writePrefix()
 
 void MergeTreeBlockOutputStream::write(const Block & block)
 {
+    /** Split the block to blocks, each of them must be written as separate part.
+      *  (split rows by partition)
+      * Works deterministically: if same block was passed, function will return same result in same order.
+      */
+
+    /// M(UInt64, max_partitions_per_insert_block, 100, "Limit maximum number of partitions in single INSERTed block. Zero means unlimited. Throw exception if the block contains too many partitions. This setting is a safety threshold, because using large number of partitions is a common misconception.", 0)
     auto part_blocks = storage.writer.splitBlockIntoParts(block, max_parts_per_block, metadata_snapshot, context);
     for (auto & current_block : part_blocks)
     {
