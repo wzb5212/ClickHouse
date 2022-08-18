@@ -142,6 +142,13 @@ void updateTTL(
 BlocksWithPartition MergeTreeDataWriter::splitBlockIntoParts(
         const Block & block, size_t max_parts, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
 {
+    /// using BlocksWithPartition = std::vector<BlockWithPartition>;
+//    struct BlockWithPartition
+//    {
+//        Block block;
+//        Row partition;
+//    };
+    /// using Row = std::vector<Field>;
     BlocksWithPartition result;
     if (!block || !block.rows())
         return result;
@@ -192,6 +199,14 @@ BlocksWithPartition MergeTreeDataWriter::splitBlockIntoParts(
 
     for (size_t col = 0; col < block.columns(); ++col)
     {
+        /** Split column to smaller columns. Each value goes to column index, selected by corresponding element of 'selector'.
+         * Selector must contain values from 0 to num_columns - 1.
+         * For default implementation, see scatterImpl.
+         */
+//        using ColumnIndex = UInt64;
+//        using Selector = PaddedPODArray<ColumnIndex>;
+//        virtual std::vector<MutablePtr> scatter(ColumnIndex num_columns, const Selector & selector) const = 0;
+
         MutableColumns scattered = block.getByPosition(col).column->scatter(partitions_count, selector);
         for (size_t i = 0; i < partitions_count; ++i)
             result[i].block.getByPosition(col).column = std::move(scattered[i]);
@@ -277,11 +292,40 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     /// This will generate unique name in scope of current server process.
     Int64 temp_index = data.insert_increment.get();
 
+    /// Index that for each part stores min and max values of a set of columns. This allows quickly excluding
+    /// parts based on conditions on these columns imposed by a query.
+    /// Currently this index is built using only columns required by partition expression, but in principle it
+    /// can be built using any set of columns.
+//    struct MinMaxIndex
+//    {
+//        /// A direct product of ranges for each key column. See Storages/MergeTree/KeyCondition.cpp for details.
+//        std::vector<Range> hyperrectangle;
+//        bool initialized = false;
+//    }
+    /// minmax_log_date.idx
     IMergeTreeDataPart::MinMaxIndex minmax_idx;
     minmax_idx.update(block, data.getMinMaxColumnsNames(metadata_snapshot->getPartitionKey()));
 
+    /// MergeTreePartition
+    /// This class represents a partition value of a single part and encapsulates its loading/storing logic.
+//    struct MergeTreePartition
+//    {
+//        Row value;
+//    }
     MergeTreePartition partition(std::move(block_with_partition.partition));
 
+    /// Information about partition and the range of blocks contained in the part.
+/// Allows determining if parts are disjoint or one part fully contains the other.
+//    struct MergeTreePartInfo
+//    {
+//        String partition_id;
+//        Int64 min_block = 0;
+//        Int64 max_block = 0;
+//        UInt32 level = 0;
+//        Int64 mutation = 0; /// If the part has been mutated or contains mutated parts, is equal to mutation version number.
+//
+//        bool use_leagcy_max_level = false; /// For compatibility. TODO remove it
+//    }
     MergeTreePartInfo new_part_info(partition.getID(metadata_snapshot->getPartitionKey().sample_block), temp_index, temp_index, 0);
     String part_name;
     if (data.format_version < MERGE_TREE_DATA_MIN_FORMAT_VERSION_WITH_CUSTOM_PARTITIONING)
@@ -307,6 +351,22 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
         data.getSortingKeyAndSkipIndicesExpression(metadata_snapshot)->execute(block);
 
     Names sort_columns = metadata_snapshot->getSortingKeyColumns();
+
+    /// Description of the sorting rule for several columns.
+    /// using SortDescription = std::vector<SortColumnDescription>;
+
+    /// Description of the sorting rule by one column.
+//    struct SortColumnDescription
+//    {
+//        std::string column_name; /// The name of the column.
+//        size_t column_number;    /// Column number (used if no name is given).
+//        int direction;           /// 1 - ascending, -1 - descending.
+//        int nulls_direction;     /// 1 - NULLs and NaNs are greater, -1 - less.
+//        /// To achieve NULLS LAST, set it equal to direction, to achieve NULLS FIRST, set it opposite.
+//        std::shared_ptr<Collator> collator; /// Collator for locale-specific comparison of strings
+//        bool with_fill;
+//        FillColumnDescription fill_description;
+//    }
     SortDescription sort_description;
     size_t sort_columns_size = sort_columns.size();
     sort_description.reserve(sort_columns_size);
@@ -321,8 +381,20 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     IColumn::Permutation perm;
     if (!sort_description.empty())
     {
+        /** Quickly check whether the block is already sorted. If the block is not sorted - returns false as fast as possible.
+          * Collations are not supported.
+          */
         if (!isAlreadySorted(block, sort_description))
         {
+            /** Used only in StorageMergeTree to sort the data with INSERT.
+              * Sorting is stable. This is important for keeping the order of rows in the CollapsingMergeTree engine
+              *  - because based on the order of rows it is determined whether to delete or leave groups of rows when collapsing.
+              * Collations are not supported. Partial sorting is not supported.
+              */
+
+            /** Same as stableSortBlock, but do not sort the block, but only calculate the permutation of the values,
+              *  so that you can rearrange the column values yourself.
+              */
             stableGetPermutation(block, sort_description, perm);
             perm_ptr = &perm;
         }
@@ -342,15 +414,21 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     if (expected_size == 0)
         return nullptr;
 
+    /// TTLInfos: MergeTreeDataPartTTLInfos: PartTTLInfo for all columns and table with minimal ttl for whole part
     DB::IMergeTreeDataPart::TTLInfos move_ttl_infos;
     const auto & move_ttl_entries = metadata_snapshot->getMoveTTLs();
+
+    /// updateTTL: Computes ttls and updates ttl infos
     for (const auto & ttl_entry : move_ttl_entries)
         updateTTL(ttl_entry, move_ttl_infos, move_ttl_infos.moves_ttl[ttl_entry.result_column], block, false);
 
     NamesAndTypesList columns = metadata_snapshot->getColumns().getAllPhysical().filter(block.getNames());
+
+    /// Reserves space at least 1MB preferring best destination according to `ttl_infos`.
     ReservationPtr reservation = data.reserveSpacePreferringTTLRules(metadata_snapshot, expected_size, move_ttl_infos, time(nullptr), 0, true);
     VolumePtr volume = data.getStoragePolicy()->getVolume(0);
 
+    /// After this method setColumns must be called
     auto new_data_part = data.createPart(
         part_name,
         data.choosePartType(expected_size, block.rows()),
@@ -358,6 +436,7 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
         createVolumeFromReservation(reservation, volume),
         TMP_PREFIX + part_name);
 
+    /// M(Bool, assign_part_uuids, false, "Generate UUIDs for parts. Before enabling check that all replicas support new format.", 0)
     if (data.storage_settings.get()->assign_part_uuids)
         new_data_part->uuid = UUIDHelpers::generateV4();
 
@@ -371,6 +450,8 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     if (new_data_part->isStoredOnDisk())
     {
         /// The name could be non-unique in case of stale files from previous runs.
+        /// Returns path to part dir relatively to disk mount point
+        /// full_path = /store/a95/a959da22-8336-42c9-a959-da228336e2c9/20220807_1_1_0/
         String full_path = new_data_part->getFullRelativePath();
 
         if (new_data_part->volume->getDisk()->exists(full_path))
@@ -382,6 +463,7 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
         const auto disk = new_data_part->volume->getDisk();
         disk->createDirectories(full_path);
 
+        /// M(Bool, fsync_part_directory, false, "Do fsync for part directory after all part operations (writes, renames, etc.).", 0)
         if (data.getSettings()->fsync_part_directory)
             sync_guard = disk->getDirectorySyncGuard(full_path);
     }
@@ -431,14 +513,34 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
 
     /// This effectively chooses minimal compression method:
     ///  either default lz4 or compression method with zero thresholds on absolute and relative part size.
+    /// Lets you select the compression codec according to the conditions described in the configuration file.
     auto compression_codec = data.getContext()->chooseCompressionCodec(0, 0);
 
     const auto & index_factory = MergeTreeIndexFactory::instance();
+
+    /// MergedBlockOutputStream
+    /** To write one part.
+      * The data refers to one partition, and is written in one part.
+      */
+    /// create direction .bin, .mrk, primary.idx, min_max.idx, skip.idx2
     MergedBlockOutputStream out(new_data_part, metadata_snapshot, columns, index_factory.getMany(metadata_snapshot->getSecondaryIndices()), compression_codec);
+    /// M(Bool, fsync_after_insert, false, "Do fsync for every inserted part. Significantly decreases performance of inserts, not recommended to use with wide parts.", 0)
     bool sync_on_insert = data.getSettings()->fsync_after_insert;
 
+    /** Write or do something before all data.
+      */
     out.writePrefix();
+
+    /** If the data is not sorted, but we pre-calculated the permutation, after which they will be sorted.
+    * This method is used to save RAM, since you do not need to keep two blocks at once - the source and the sorted.
+    */
+    /// write memory: col.bin, col.mrk, primary.idx, skip.idx2
+    ///
     out.writeWithPermutation(block, perm_ptr);
+
+    /// Finalize writing part and fill inner structures
+    /// flush disk: col.bin, col.mrk, primary.idx, skip.idx2
+    /// write memory and flush disk: min_max.idx, count.txt, ttl.txt, columns.txt, checksums.txt
     out.writeSuffixAndFinalizePart(new_data_part, sync_on_insert);
 
     ProfileEvents::increment(ProfileEvents::MergeTreeDataWriterRows, block.rows());
