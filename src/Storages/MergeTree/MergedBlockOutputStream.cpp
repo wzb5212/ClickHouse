@@ -201,6 +201,7 @@ void MergedBlockOutputStream::finalizePartOnDisk(
 
 void MergedBlockOutputStream::writeImpl(const Block & block, const IColumn::Permutation * permutation)
 {
+    /// Checks that every column in block is not nullptr and has same number of elements.
     block.checkNumberOfRows();
     size_t rows = block.rows();
     if (!rows)

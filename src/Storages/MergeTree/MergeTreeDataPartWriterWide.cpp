@@ -26,6 +26,29 @@ Granules getGranulesToWrite(const MergeTreeIndexGranularity & index_granularity,
     if (current_mark >= index_granularity.getMarksCount())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Request to get granules from mark {} but index granularity size is {}", current_mark, index_granularity.getMarksCount());
 
+//    struct Granule
+//    {
+//        /// Start row in block for granule
+//        size_t start_row;
+//        /// Amount of rows from block which have to be written to disk from start_row
+//        size_t rows_to_write;
+//        /// Global mark number in the list of all marks (index_granularity) for this part
+//        size_t mark_number;
+//        /// Should writer write mark for the first of this granule to disk.
+//        /// NOTE: Sometimes we don't write mark for the start row, because
+//        /// this granule can be continuation of the previous one.
+//        bool mark_on_start;
+//        /// if true: When this granule will be written to disk all rows for corresponding mark will
+//        /// be wrtten. It doesn't mean that rows_to_write == index_granularity.getMarkRows(mark_number),
+//        /// We may have a lot of small blocks between two marks and this may be the last one.
+//        bool is_complete;
+//    };
+//
+//    /// Multiple granules to write for concrete block.
+//    using Granules = std::vector<Granule>;
+
+    /// Single unit for writing data to disk. Contains information about
+    /// amount of rows to write and marks.
     Granules result;
     size_t current_row = 0;
     /// When our last mark is not finished yet and we have to write rows into it
@@ -47,6 +70,7 @@ Granules getGranulesToWrite(const MergeTreeIndexGranularity & index_granularity,
     /// Calculating normal granules for block
     while (current_row < block_rows)
     {
+        /// getMarkRows：Rows after mark to next mark
         size_t expected_rows_in_mark = index_granularity.getMarkRows(current_mark);
         size_t rows_left_in_block  = block_rows - current_row;
         /// If we have less rows in block than expected in granularity
@@ -169,9 +193,15 @@ void MergeTreeDataPartWriterWide::write(const Block & block, const IColumn::Perm
     /// Fill index granularity for this block
     /// if it's unknown (in case of insert data or horizontal merge,
     /// but not in case of vertical part of vertical merge)
+    /// , compute_granularity(index_granularity.empty())
     if (compute_granularity)
     {
+        /// Count index_granularity for block and store in `index_granularity`
         size_t index_granularity_for_block = computeIndexGranularity(block);
+
+        /// How many rows we have already written in the current mark.
+        /// More than zero when incoming blocks are smaller then their granularity.
+        /// size_t rows_written_in_last_mark = 0;
         if (rows_written_in_last_mark > 0)
         {
             size_t rows_left_in_last_mark = index_granularity.getMarkRows(getCurrentMark()) - rows_written_in_last_mark;
@@ -192,13 +222,19 @@ void MergeTreeDataPartWriterWide::write(const Block & block, const IColumn::Perm
         fillIndexGranularity(index_granularity_for_block, block.rows());
     }
 
+    /// Get granules for block using index_granularity
     auto granules_to_write = getGranulesToWrite(index_granularity, block.rows(), getCurrentMark(), rows_written_in_last_mark);
 
+    /// written_offset_columns: To correctly write Nested elements column-by-column.
     auto offset_columns = written_offset_columns ? *written_offset_columns : WrittenOffsetColumns{};
     Block primary_key_block;
+
+    /// settings.rewrite_primary_key = true
+    /// primary_key
     if (settings.rewrite_primary_key)
         primary_key_block = getBlockAndPermute(block, metadata_snapshot->getPrimaryKeyColumns(), permutation);
 
+    /// skip_indexes
     Block skip_indexes_block = getBlockAndPermute(block, getSkipIndicesColumns(), permutation);
 
     auto it = columns_list.begin();
@@ -211,6 +247,9 @@ void MergeTreeDataPartWriterWide::write(const Block & block, const IColumn::Perm
             if (primary_key_block.has(it->name))
             {
                 const auto & primary_column = *primary_key_block.getByName(it->name).column;
+                /// Write data of one column.
+                /// Return how many marks were written and
+                /// how many rows were written for last mark
                 writeColumn(*it, primary_column, offset_columns, granules_to_write);
             }
             else if (skip_indexes_block.has(it->name))
@@ -231,11 +270,17 @@ void MergeTreeDataPartWriterWide::write(const Block & block, const IColumn::Perm
         }
     }
 
+    ///calculateAndSerializePrimaryIndex:  Write primary index according to granules_to_write
     if (settings.rewrite_primary_key)
         calculateAndSerializePrimaryIndex(primary_key_block, granules_to_write);
 
+    /// Write skip indices according to granules_to_write. Skip indices also have their own marks
+    /// and one skip index granule can contain multiple "normal" marks. So skip indices serialization
+    /// require additional state: skip_indices_aggregators and skip_index_accumulated_marks
     calculateAndSerializeSkipIndices(skip_indexes_block, granules_to_write);
 
+    /// Use information from just written granules to shift current mark
+    /// in our index_granularity array.
     shiftCurrentMark(granules_to_write);
 }
 
@@ -341,7 +386,9 @@ void MergeTreeDataPartWriterWide::writeColumn(
     const auto & global_settings = storage.getContext()->getSettingsRef();
     ISerialization::SerializeBinaryBulkSettings serialize_settings;
     serialize_settings.getter = createStreamGetter(name_and_type, offset_columns);
+    /// M(UInt64, low_cardinality_max_dictionary_size, 8192, "Maximum size (in rows) of shared global dictionary for LowCardinality type.", 0)
     serialize_settings.low_cardinality_max_dictionary_size = global_settings.low_cardinality_max_dictionary_size;
+    /// M(Bool, low_cardinality_use_single_dictionary_for_part, false, "LowCardinality type serialization setting. If is true, than will use additional keys when global dictionary overflows. Otherwise, will create several shared dictionaries.", 0)
     serialize_settings.low_cardinality_use_single_dictionary_for_part = global_settings.low_cardinality_use_single_dictionary_for_part != 0;
 
     for (const auto & granule : granules)
@@ -355,6 +402,7 @@ void MergeTreeDataPartWriterWide::writeColumn(
             last_non_written_marks[name] = getCurrentMarksForColumn(name_and_type, offset_columns, serialize_settings.path);
         }
 
+        /// Write single granule of one column.
         writeSingleGranule(
            name_and_type,
            column,
@@ -370,6 +418,7 @@ void MergeTreeDataPartWriterWide::writeColumn(
             if (marks_it == last_non_written_marks.end())
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "No mark was saved for incomplete granule for column {}", backQuoteIfNeed(name));
 
+            ///flushMarkToFile: Write mark to disk using stream and rows count
             for (const auto & mark : marks_it->second)
                 flushMarkToFile(mark, index_granularity.getMarkRows(granule.mark_number));
             last_non_written_marks.erase(marks_it);
@@ -593,12 +642,14 @@ static void fillIndexGranularityImpl(
     size_t index_granularity_for_block,
     size_t rows_in_block)
 {
+    ///index_granularity.appendMark:  Add new mark with rows_count
     for (size_t current_row = index_offset; current_row < rows_in_block; current_row += index_granularity_for_block)
         index_granularity.appendMark(index_granularity_for_block);
 }
 
 void MergeTreeDataPartWriterWide::fillIndexGranularity(size_t index_granularity_for_block, size_t rows_in_block)
 {
+    /// getCurrentMark(): Get global number of the current which we are writing (or going to start to write)
     if (getCurrentMark() < index_granularity.getMarksCount() && getCurrentMark() != index_granularity.getMarksCount() - 1)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Trying to add marks, while current mark {}, but total marks {}", getCurrentMark(), index_granularity.getMarksCount());
 

@@ -139,6 +139,10 @@ static size_t computeIndexGranularityImpl(
 size_t MergeTreeDataPartWriterOnDisk::computeIndexGranularity(const Block & block) const
 {
     const auto storage_settings = storage.getSettings();
+    /// M(UInt64, index_granularity_bytes, 10 * 1024 * 1024, "Approximate amount of bytes in single granule (0 - disabled).", 0)
+    /// M(UInt64, index_granularity, 8192, "How many rows correspond to one primary key value.", 0)
+    /// blocks_are_granules_size = false
+    /// settings.can_use_adaptive_granularity = true
     return computeIndexGranularityImpl(
             block,
             storage_settings->index_granularity_bytes,
