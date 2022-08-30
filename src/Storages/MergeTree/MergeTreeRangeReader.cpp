@@ -626,6 +626,7 @@ MergeTreeRangeReader::ReadResult MergeTreeRangeReader::read(size_t max_rows, Mar
 
     ReadResult read_result;
 
+    /// MergeTreeRangeReader * prev_reader = nullptr; /// If not nullptr, read from prev_reader firstly.
     if (prev_reader)
     {
         read_result = prev_reader->read(max_rows, ranges);

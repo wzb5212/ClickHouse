@@ -1755,6 +1755,7 @@ ReplicatedMergeTreeMergePredicate::ReplicatedMergeTreeMergePredicate(
     : queue(queue_)
     , prev_virtual_parts(queue.format_version)
 {
+    /// `virtual_parts` = `current_parts` + `queue`.
     {
         std::lock_guard lock(queue.state_mutex);
         prev_virtual_parts = queue.virtual_parts;
@@ -1995,6 +1996,7 @@ bool ReplicatedMergeTreeMergePredicate::canMergeSinglePart(
     const MergeTreeData::DataPartPtr & part,
     String * out_reason) const
 {
+    /// move parts between shards
     if (pinned_part_uuids.part_uuids.contains(part->uuid))
     {
         if (out_reason)
@@ -2009,6 +2011,7 @@ bool ReplicatedMergeTreeMergePredicate::canMergeSinglePart(
         return false;
     }
 
+    /// prev_virtual_parts: A snapshot of active parts that would appear if the replica executes all log entries in its queue.
     if (prev_virtual_parts.getContainingPart(part->info).empty())
     {
         if (out_reason)
@@ -2020,6 +2023,10 @@ bool ReplicatedMergeTreeMergePredicate::canMergeSinglePart(
 
     /// We look for containing parts in queue.virtual_parts (and not in prev_virtual_parts) because queue.virtual_parts is newer
     /// and it is guaranteed that it will contain all merges assigned before this object is constructed.
+
+    /** What will be the set of active parts after executing all log entries up to log_pointer.
+      * Used to determine which merges can be assigned (see ReplicatedMergeTreeMergePredicate)
+      */
     String containing_part = queue.virtual_parts.getContainingPart(part->info);
     if (containing_part != part->name)
     {

@@ -506,6 +506,7 @@ InterpreterSelectQuery::InterpreterSelectQuery(
         result_header = getSampleBlockImpl();
     };
 
+    /// M(Bool, optimize_move_to_prewhere, true, "Allows disabling WHERE to PREWHERE optimization in SELECT queries from MergeTree.", 0)
     analyze(settings.optimize_move_to_prewhere);
 
     bool need_analyze_again = false;
@@ -1822,6 +1823,7 @@ void InterpreterSelectQuery::executeFetchColumns(QueryProcessingStage::Enum proc
             settings.max_columns_to_read);
 
     /// General limit for the number of threads.
+    /// M(MaxThreads, max_threads, 0, "The maximum number of threads to execute the request. By default, it is determined automatically.", 0)
     size_t max_threads_execute_query = settings.max_threads;
 
     /** With distributed query processing, almost no computations are done in the threads,
@@ -1835,9 +1837,15 @@ void InterpreterSelectQuery::executeFetchColumns(QueryProcessingStage::Enum proc
     if (storage && storage->isRemote())
     {
         is_remote = true;
+        /// M(UInt64, max_distributed_connections, 1024, "The maximum number of connections for distributed processing of one query (should be greater than max_threads).", 0)
         max_threads_execute_query = max_streams = settings.max_distributed_connections;
     }
 
+    /** Which blocks by default read the data (by number of rows).
+      * Smaller values give better cache locality, less consumption of RAM, but more overhead to process the query.
+      */
+    /// #define DEFAULT_BLOCK_SIZE 65505    /// 65536 minus 16 + 15 bytes padding that we usually have in arrays
+    /// M(UInt64, max_block_size, DEFAULT_BLOCK_SIZE, "Maximum block size for reading", 0)
     UInt64 max_block_size = settings.max_block_size;
 
     auto [limit_length, limit_offset] = getLimitLengthAndOffset(query, context);

@@ -189,10 +189,39 @@ void MergeTreeWhereOptimizer::optimize(ASTSelectQuery & select) const
     if (!select.where() || select.prewhere())
         return;
 
+    /// Transform conjunctions chain in WHERE expression to Conditions list.
+    /// using Conditions = std::list<Condition>;
+
+//    struct Condition
+//    {
+//        ASTPtr node;
+//        UInt64 columns_size = 0;
+//        NameSet identifiers;
+//
+//        /// Can condition be moved to prewhere?
+//        bool viable = false;
+//
+//        /// Does the condition presumably have good selectivity?
+//        bool good = false;
+//
+//        auto tuple() const
+//        {
+//            return std::make_tuple(!viable, !good, columns_size, identifiers.size());
+//        }
+//
+//        /// Is condition a better candidate for moving to PREWHERE?
+//        bool operator< (const Condition & rhs) const
+//        {
+//            return tuple() < rhs.tuple();
+//        }
+//    };
+
     Conditions where_conditions = analyze(select.where(), select.final());
     Conditions prewhere_conditions;
 
+    /// column_compressed_sizes
     UInt64 total_size_of_moved_conditions = 0;
+    /// column_numbers
     UInt64 total_number_of_moved_columns = 0;
 
     /// Move condition and all other conditions depend on the same set of columns.

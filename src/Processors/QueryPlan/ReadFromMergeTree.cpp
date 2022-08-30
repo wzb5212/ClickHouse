@@ -272,6 +272,10 @@ struct PartRangesReadInfo
             data_settings.index_granularity,
             index_granularity_bytes);
 
+        /// M(UInt64, merge_tree_min_rows_for_concurrent_read, (20 * 8192), "If at least as many lines are read from one file, the reading can be parallelized.", 0)
+        /// M(UInt64, merge_tree_min_bytes_for_concurrent_read, (24 * 10 * 1024 * 1024), "If at least as many bytes are read from one file, the reading can be parallelized.", 0)
+        /// M(UInt64, index_granularity, 8192, "How many rows correspond to one primary key value.", 0)
+        /// M(UInt64, index_granularity_bytes, 10 * 1024 * 1024, "Approximate amount of bytes in single granule (0 - disabled).", 0)
         min_marks_for_concurrent_read = MergeTreeDataSelectExecutor::minMarksForConcurrentRead(
             settings.merge_tree_min_rows_for_concurrent_read,
             settings.merge_tree_min_bytes_for_concurrent_read,
@@ -801,6 +805,7 @@ ReadFromMergeTree::AnalysisResult ReadFromMergeTree::selectRangesToRead(MergeTre
 
     const auto & select = query_info.query->as<ASTSelectQuery &>();
 
+    /// Filter parts using minmax index and partition key.
     MergeTreeDataSelectExecutor::filterPartsByPartition(
         parts, part_values, metadata_snapshot_base, data, query_info, context,
         max_block_numbers_to_read.get(), log, result.index_stats);

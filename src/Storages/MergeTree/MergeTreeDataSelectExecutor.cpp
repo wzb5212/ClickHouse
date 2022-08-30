@@ -121,7 +121,9 @@ static RelativeSize convertAbsoluteSampleSizeToRelative(const ASTPtr & node, siz
     return std::min(RelativeSize(1), RelativeSize(absolute_sample_size) / RelativeSize(approx_total_rows));
 }
 
-
+/** When reading, selects a set of parts that covers the desired range of the index.
+  * max_blocks_number_to_read - if not nullptr, do not read all the parts whose right border is greater than max_block in partition.
+  */
 QueryPlanPtr MergeTreeDataSelectExecutor::read(
     const Names & column_names_to_return,
     const StorageMetadataPtr & metadata_snapshot,
@@ -136,6 +138,7 @@ QueryPlanPtr MergeTreeDataSelectExecutor::read(
     auto parts = data.getDataPartsVector();
     if (!query_info.projection)
     {
+        /// The same as read, but with specified set of parts.
         auto plan = readFromParts(
             parts,
             column_names_to_return,
@@ -656,6 +659,7 @@ std::optional<std::unordered_set<String>> MergeTreeDataSelectExecutor::filterPar
     return {};
 }
 
+/// Filter parts using minmax index and partition key.
 void MergeTreeDataSelectExecutor::filterPartsByPartition(
     MergeTreeData::DataPartsVector & parts,
     const std::optional<std::unordered_set<String>> & part_values,
@@ -764,6 +768,22 @@ RangesInDataParts MergeTreeDataSelectExecutor::filterPartsByPrimaryKeyAndSkipInd
     ReadFromMergeTree::IndexStats & index_stats,
     bool use_skip_indexes)
 {
+    /// using RangesInDataParts = std::vector<RangesInDataPart>;
+//    struct RangesInDataPart
+//    {
+//        MergeTreeData::DataPartPtr data_part;
+//        size_t part_index_in_query;
+//        MarkRanges ranges;
+//    }
+
+    /** A pair of marks that defines the range of rows in a part. Specifically, the range has the form [begin * index_granularity, end * index_granularity).
+  */
+//    struct MarkRange
+//    {
+//        size_t begin;
+//        size_t end;
+//    }
+
     RangesInDataParts parts_with_ranges(parts.size());
     const Settings & settings = context->getSettingsRef();
 
@@ -851,6 +871,10 @@ RangesInDataParts MergeTreeDataSelectExecutor::filterPartsByPrimaryKeyAndSkipInd
 
             size_t total_marks_count = part->index_granularity.getMarksCountWithoutFinal();
 
+            /// markRangesFromPKRange
+            /// Calculates a set of mark ranges, that could possibly contain keys, required by condition.
+            /// In other words, it removes subranges from whole range, that definitely could not contain required keys.
+
             if (metadata_snapshot->hasPrimaryKey())
                 ranges.ranges = markRangesFromPKRange(part, metadata_snapshot, key_condition, settings, log);
             else if (total_marks_count)
@@ -870,6 +894,8 @@ RangesInDataParts MergeTreeDataSelectExecutor::filterPartsByPrimaryKeyAndSkipInd
 
                 size_t total_granules = 0;
                 size_t granules_dropped = 0;
+
+                /// secondary index
                 ranges.ranges = filterMarksUsingIndex(
                     index_and_condition.index,
                     index_and_condition.condition,

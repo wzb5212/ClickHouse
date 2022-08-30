@@ -98,10 +98,25 @@ std::map<MergeTreePartInfo, String>::const_iterator
 ActiveDataPartSet::getContainingPartImpl(const MergeTreePartInfo & part_info) const
 {
     /// A part can only be covered/overlapped by the previous or next one in `part_info_to_name`.
+    /// std::map lower_bound: Returns an iterator pointing to the first element in the container whose key is not considered to go before k (i.e., either it is equivalent or goes after).
+    /// std::map upper_bound: Returns an iterator pointing to the first element in the container whose key is considered to go after k.
+    /// std::map end: Returns an iterator referring to the past-the-end element in the map container.
+    /// std::map begin: Returns an iterator referring to the first element in the map container.
+
+    /// MergeTreePartInfo
+    //    return std::forward_as_tuple(partition_id, min_block, max_block, level, mutation)
+//           < std::forward_as_tuple(rhs.partition_id, rhs.min_block, rhs.max_block, rhs.level, rhs.mutation);
+
     auto it = part_info_to_name.lower_bound(part_info);
 
     if (it != part_info_to_name.end())
     {
+        /// contains
+//        return partition_id == rhs.partition_id        /// Parts for different partitions are not merged
+//               && min_block <= rhs.min_block
+//               && max_block >= rhs.max_block
+//               && level >= rhs.level
+//               && mutation >= rhs.mutation;
         if (it->first.contains(part_info))
             return it;
     }
