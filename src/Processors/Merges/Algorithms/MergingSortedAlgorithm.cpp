@@ -80,6 +80,40 @@ void MergingSortedAlgorithm::consume(Input & input, size_t source_num)
     current_inputs[source_num].swap(input);
     cursors[source_num].reset(current_inputs[source_num].chunk.getColumns(), {});
 
+    /** Cursor allows to compare rows in different blocks (and parts).
+      * Cursor moves inside single block.
+      * It is used in priority queue.
+      */
+//    struct SortCursorImpl
+//    {
+//        ColumnRawPtrs sort_columns;
+//        ColumnRawPtrs all_columns;
+//        SortDescription desc;
+//        size_t sort_columns_size = 0;
+//        size_t rows = 0;
+//
+//        /** Determines order if comparing columns are equal.
+//          * Order is determined by number of cursor.
+//          *
+//          * Cursor number (always?) equals to number of merging part.
+//          * Therefore this field can be used to determine part number of current row (see ColumnGathererStream).
+//          */
+//        size_t order = 0;
+//
+//        using NeedCollationFlags = std::vector<UInt8>;
+//
+//        /** Should we use Collator to sort a column? */
+//        NeedCollationFlags need_collation;
+//
+//        /** Is there at least one column with Collator. */
+//        bool has_collation = false;
+//
+//        /** We could use SortCursorImpl in case when columns aren't sorted
+//          *  but we have their sorted permutation
+//          */
+//        IColumn::Permutation * permutation = nullptr;
+//    }
+
     if (has_collation)
         queue_with_collation.push(cursors[source_num]);
     else
@@ -97,14 +131,36 @@ IMergingAlgorithm::Status MergingSortedAlgorithm::merge()
 template <typename TSortingHeap>
 IMergingAlgorithm::Status MergingSortedAlgorithm::mergeImpl(TSortingHeap & queue)
 {
+
+//    SortingHeap<SortCursor> queue_without_collation;
+//    SortingHeap<SortCursorWithCollation> queue_with_collation;
     /// Take rows in required order and put them into `merged_data`, while the rows are no more than `max_block_size`
     while (queue.isValid())
     {
+        /// Class which represents current merging chunk of data.
+        /// Also it calculates the number of merged rows and other profile info.
+        /// class MergedData
+
         if (merged_data.hasEnoughRows())
             return Status(merged_data.pull());
 
         auto current = queue.current();
 
+        /// bool isLast() const { return pos + 1 >= rows; }
+
+        /// order
+        /** Determines order if comparing columns are equal.
+         * Order is determined by number of cursor.
+         *
+         * Cursor number (always?) equals to number of merging part.
+         * Therefore this field can be used to determine part number of current row (see ColumnGathererStream).
+         */
+        size_t order = 0;
+
+        /// It is a flag which says that last row from chunk should be ignored in result.
+        /// This row is not ignored in sorting and is needed to synchronize required source
+        /// between different algorithm objects in parallel FINAL.
+        /// bool skip_last_row = false;
         if (current.impl->isLast() && current_inputs[current.impl->order].skip_last_row)
         {
             /// Get the next block from the corresponding source, if there is one.

@@ -289,6 +289,7 @@ InterpreterSelectQuery::InterpreterSelectQuery(
     initSettings();
     const Settings & settings = context->getSettingsRef();
 
+    ///  M(UInt64, max_subquery_depth, 100, "", 0)
     if (settings.max_subquery_depth && options.subquery_depth > settings.max_subquery_depth)
         throw Exception("Too deep subqueries. Maximum: " + settings.max_subquery_depth.toString(),
             ErrorCodes::TOO_DEEP_SUBQUERIES);
@@ -308,6 +309,7 @@ InterpreterSelectQuery::InterpreterSelectQuery(
     // Only propagate WITH elements to subqueries if we're not a subquery
     if (!options.is_subquery)
     {
+        /// M(Bool, enable_global_with_statement, true, "Propagate WITH statements to UNION queries and all subqueries", 0)
         if (context->getSettingsRef().enable_global_with_statement)
             ApplyWithAliasVisitor().visit(query_ptr);
         ApplyWithSubqueryVisitor().visit(query_ptr);

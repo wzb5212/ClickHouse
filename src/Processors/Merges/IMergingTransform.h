@@ -89,6 +89,7 @@ public:
 
     void work() override
     {
+        /// Filter chunks if selector position was set. For parallel final.
         filterChunks();
 
         if (!state.init_chunks.empty())

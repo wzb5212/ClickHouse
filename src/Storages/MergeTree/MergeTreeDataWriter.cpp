@@ -226,6 +226,13 @@ Block MergeTreeDataWriter::mergeBlock(const Block & block, SortDescription sort_
             /// There is nothing to merge in single block in ordinary MergeTree
             case MergeTreeData::MergingParams::Ordinary:
                 return nullptr;
+
+            /** Merges several sorted inputs into one.
+              * For each group of consecutive identical values of the primary key (the columns by which the data is sorted),
+              *  keeps row with max `version` value.
+              */
+
+            /// class ReplacingSortedAlgorithm
             case MergeTreeData::MergingParams::Replacing:
                 return std::make_shared<ReplacingSortedAlgorithm>(
                     block, 1, sort_description, data.merging_params.version_column, block_size + 1);
@@ -254,7 +261,49 @@ Block MergeTreeDataWriter::mergeBlock(const Block & block, SortDescription sort_
     if (!merging_algorithm)
         return block;
 
+    /**
+     * Chunk is a list of columns with the same length.
+     * Chunk stores the number of rows in a separate field and supports invariant of equal column length.
+     *
+     * Chunk has move-only semantic. It's more lightweight than block cause doesn't store names, types and index_by_name.
+     *
+     * Chunk can have empty set of columns but non-zero number of rows. It helps when only the number of rows is needed.
+     * Chunk can have columns with zero number of rows. It may happen, for example, if all rows were filtered.
+     * Chunk is empty only if it has zero rows and empty list of columns.
+     *
+     * Any ChunkInfo may be attached to chunk.
+     * It may be useful if additional info per chunk is needed. For example, bucket number for aggregated data.
+    **/
+
+//    Columns columns;
+//    UInt64 num_rows = 0;
+//    ChunkInfoPtr chunk_info;
+
     Chunk chunk(block.getColumns(), block_size);
+
+//    struct Input
+//    {
+//        Chunk chunk;
+//
+//        /// It is a flag which says that last row from chunk should be ignored in result.
+//        /// This row is not ignored in sorting and is needed to synchronize required source
+//        /// between different algorithm objects in parallel FINAL.
+//        bool skip_last_row = false;
+//
+//        IColumn::Permutation * permutation = nullptr;
+//
+//        void swap(Input & other)
+//        {
+//            chunk.swap(other.chunk);
+//            std::swap(skip_last_row, other.skip_last_row);
+//        }
+//
+//        void set(Chunk chunk_)
+//        {
+//            chunk = std::move(chunk_);
+//            skip_last_row = false;
+//        }
+//    };
 
     IMergingAlgorithm::Input input;
     input.set(std::move(chunk));
@@ -264,11 +313,22 @@ Block MergeTreeDataWriter::mergeBlock(const Block & block, SortDescription sort_
     inputs.push_back(std::move(input));
     merging_algorithm->initialize(std::move(inputs));
 
+//    struct Status
+//    {
+//        Chunk chunk;
+//        bool is_finished = false;
+//        ssize_t required_source = -1;
+//
+//        explicit Status(Chunk chunk_) : chunk(std::move(chunk_)) {}
+//        explicit Status(Chunk chunk_, bool is_finished_) : chunk(std::move(chunk_)), is_finished(is_finished_) {}
+//        explicit Status(size_t source) : required_source(source) {}
+//    };
     IMergingAlgorithm::Status status = merging_algorithm->merge();
 
     /// Check that after first merge merging_algorithm is waiting for data from input 0.
     if (status.required_source != 0)
         throw Exception("Logical error: required source after the first merge is not 0.", ErrorCodes::LOGICAL_ERROR);
+
 
     status = merging_algorithm->merge();
 

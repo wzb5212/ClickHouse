@@ -698,6 +698,19 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     if (isTTLMergeType(future_part.merge_type) && ttl_merges_blocker.isCancelled())
         throw Exception("Cancelled merging parts with TTL", ErrorCodes::ABORTED);
 
+
+    /// Auxiliary struct holding metainformation for the future merged or mutated part.
+//    struct FutureMergedMutatedPart
+//    {
+//        String name;
+//        UUID uuid = UUIDHelpers::Nil;
+//        String path;
+//        MergeTreeDataPartType type;
+//        MergeTreePartInfo part_info;
+//        MergeTreeData::DataPartsVector parts;
+//        MergeType merge_type = MergeType::REGULAR;
+//    }
+
     const MergeTreeData::DataPartsVector & parts = future_part.parts;
 
     LOG_DEBUG(log, "Merging {} parts: from {} to {} into {}", parts.size(), parts.front()->name, parts.back()->name, future_part.type.toString());
@@ -720,9 +733,15 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     NamesAndTypesList storage_columns = metadata_snapshot->getColumns().getAllPhysical();
     const auto data_settings = data.getSettings();
 
+    /// ordinary columns
     NamesAndTypesList gathering_columns;
+
+    /// PK columns
     NamesAndTypesList merging_columns;
+
     Names gathering_column_names, merging_column_names;
+
+    /// PK columns are sorted and merged, ordinary columns are gathered using info from merge step
     extractMergingAndGatheringColumns(
         storage_columns,
         metadata_snapshot->getSortingKey().expression,
@@ -753,6 +772,12 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     for (const auto & part : parts)
     {
         new_data_part->ttl_infos.update(part->ttl_infos);
+
+        /// checkAllTTLCalculated
+        /// Checks that all TTLs (table min/max, column ttls, so on) for part
+        /// calculated. Part without calculated TTL may exist if TTL was added after
+        /// part creation (using alter query with materialize_ttl setting).
+
         if (metadata_snapshot->hasAnyTTL() && !part->checkAllTTLCalculated(metadata_snapshot))
         {
             LOG_INFO(log, "Some TTL values were not calculated for part {}. Will calculate them forcefully during merge.", part->name);
@@ -773,6 +798,14 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
 
     size_t sum_input_rows_upper_bound = merge_list_element.total_rows_count;
     size_t sum_compressed_bytes_upper_bound = merge_list_element.total_size_bytes_compressed;
+
+    /// Algorithm of Merge.
+//    enum class MergeAlgorithm
+//    {
+//        Undecided, /// Not running yet
+//        Horizontal, /// per-row merge of all columns
+//        Vertical /// per-row merge of PK and secondary indices columns, per-column gather for non-PK columns
+//    };
     MergeAlgorithm chosen_merge_algorithm = chooseMergeAlgorithm(
         parts, sum_input_rows_upper_bound, gathering_columns, deduplicate, need_remove_expired_values, merging_params);
     merge_list_element.merge_algorithm.store(chosen_merge_algorithm, std::memory_order_relaxed);
@@ -784,12 +817,36 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     /// (which is locked in shared mode when input streams are created) and when inserting new data
     /// the order is reverse. This annoys TSan even though one lock is locked in shared mode and thus
     /// deadlock is impossible.
+
+    /// Get compression codec for part according to TTL rules and <compression>
+    /// section from config.xml.
     auto compression_codec = data.getCompressionCodecForPart(merge_list_element.total_size_bytes_compressed, new_data_part->ttl_infos, time_of_merge);
 
     auto tmp_disk = context->getTemporaryVolume()->getDisk();
+
+    /// unique_ptr：
+    /// std::unique_ptr is a smart pointer that owns and manages another object through a pointer and disposes of that object when the unique_ptr goes out of scope.
+
+    /// The object is disposed of, using the associated deleter when either of the following happens:
+    ///     the managing unique_ptr object is destroyed
+    ///     the managing unique_ptr object is assigned another pointer via operator= or reset().
+
     std::unique_ptr<TemporaryFile> rows_sources_file;
     std::unique_ptr<WriteBufferFromFileBase> rows_sources_uncompressed_write_buf;
     std::unique_ptr<WriteBuffer> rows_sources_write_buf;
+
+    /* Allow to compute more accurate progress statistics */
+//        class ColumnSizeEstimator
+//        {
+//            MergeTreeData::DataPart::ColumnToSize map;
+//        public:
+//
+//            /// Stores approximate size of columns in bytes
+//            /// Exact values are not required since it used for relative values estimation (progress).
+//            size_t sum_total = 0;
+//            size_t sum_index_columns = 0;
+//            size_t sum_ordinary_columns = 0;
+
     std::optional<ColumnSizeEstimator> column_sizes;
 
     SyncGuardPtr sync_guard;
@@ -800,12 +857,17 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
         rows_sources_uncompressed_write_buf = tmp_disk->writeFile(fileName(rows_sources_file->path()));
         rows_sources_write_buf = std::make_unique<CompressedWriteBuffer>(*rows_sources_uncompressed_write_buf);
 
+        /// using ColumnToSize = std::map<std::string, UInt64>;
+        /// Populates columns_to_size map (compressed size).
+        /// void accumulateColumnSizes(ColumnToSize & /* column_to_size */) const;
+
         MergeTreeData::DataPart::ColumnToSize merged_column_to_size;
         for (const MergeTreeData::DataPartPtr & part : parts)
             part->accumulateColumnSizes(merged_column_to_size);
 
         column_sizes = ColumnSizeEstimator(merged_column_to_size, merging_column_names, gathering_column_names);
 
+        /// M(Bool, fsync_part_directory, false, "Do fsync for part directory after all part operations (writes, renames, etc.).", 0)
         if (data.getSettings()->fsync_part_directory)
             sync_guard = disk->getDirectorySyncGuard(new_part_tmp_path);
     }
@@ -826,6 +888,7 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     /// We count total amount of bytes in parts
     /// and use direct_io + aio if there is more than min_merge_bytes_to_use_direct_io
     bool read_with_direct_io = false;
+    /// M(UInt64, min_merge_bytes_to_use_direct_io, 10ULL * 1024 * 1024 * 1024, "Minimal amount of bytes to enable O_DIRECT in merge (0 - disabled).", 0)
     if (data_settings->min_merge_bytes_to_use_direct_io != 0)
     {
         size_t total_size = 0;
@@ -842,14 +905,62 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
         }
     }
 
+    /** Progress callback.
+      * What it should update:
+      * - approximate progress
+      * - amount of read rows
+      * - various metrics
+      * - time elapsed for current merge.
+      */
+
+    /// Auxiliary struct that for each merge stage stores its current progress.
+    /// A stage is: the horizontal stage + a stage for each gathered column (if we are doing a
+    /// Vertical merge) or a mutation of a single part. During a single stage all rows are read.
+//    struct MergeStageProgress
+//    {
+//        explicit MergeStageProgress(Float64 weight_)
+//            : is_first(true) , weight(weight_)
+//        {
+//        }
+//
+//        MergeStageProgress(Float64 initial_progress_, Float64 weight_)
+//            : initial_progress(initial_progress_), is_first(false), weight(weight_)
+//        {
+//        }
+//
+//        Float64 initial_progress = 0.0;
+//        bool is_first;
+//        Float64 weight;
+//
+//        UInt64 total_rows = 0;
+//        UInt64 rows_read = 0;
+//    };
+
     MergeStageProgress horizontal_stage_progress(
         column_sizes ? column_sizes->keyColumnsWeight() : 1.0);
 
     for (const auto & part : parts)
     {
+        /// Lightweight (in terms of logic) stream for reading single part from MergeTree
+//        class MergeTreeSequentialSource : public SourceWithProgress
+//        {
+//        public:
+//            MergeTreeSequentialSource(
+//                const MergeTreeData & storage_,
+//                const StorageMetadataPtr & metadata_snapshot_,
+//                MergeTreeData::DataPartPtr data_part_,
+//                Names columns_to_read_,
+//                bool read_with_direct_io_,
+//                bool take_column_types_from_storage,
+//                bool quiet = false);
+//        }
         auto input = std::make_unique<MergeTreeSequentialSource>(
             data, metadata_snapshot, part, merging_column_names, read_with_direct_io, true);
 
+        /// Set the execution progress bar callback.
+        /// It is called after each chunk.
+        /// The function takes the number of rows in the last chunk, the number of bytes in the last chunk.
+        /// Note that the callback can be called from different threads.
         input->setProgressCallback(
             MergeProgressCallback(merge_list_element, watch_prev_elapsed, horizontal_stage_progress));
 
@@ -859,6 +970,12 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
         {
             pipe.addSimpleTransform([&metadata_snapshot](const Block & header)
             {
+                /// ExpressionTransform
+                /** Executes a certain expression over the block.
+                * The expression consists of column identifiers from the block, constants, common functions.
+                * For example: hits * 2 + 3, url LIKE '%yandex%'
+                * The expression processes each row independently of the others.
+                */
                 return std::make_shared<ExpressionTransform>(header, metadata_snapshot->getSortingKey().expression);
             });
         }
@@ -874,6 +991,19 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     Names partition_key_columns = metadata_snapshot->getPartitionKey().column_names;
 
     Block header = pipes.at(0).getHeader();
+
+    /// Description of the sorting rule by one column.
+//    struct SortColumnDescription
+//    {
+//        std::string column_name; /// The name of the column.
+//        size_t column_number; /// Column number (used if no name is given).
+//        int direction; /// 1 - ascending, -1 - descending.
+//        int nulls_direction; /// 1 - NULLs and NaNs are greater, -1 - less.
+//        /// To achieve NULLS LAST, set it equal to direction, to achieve NULLS FIRST, set it opposite.
+//        std::shared_ptr<Collator> collator; /// Collator for locale-specific comparison of strings
+//        bool with_fill;
+//        FillColumnDescription fill_description;
+//    }
     for (size_t i = 0; i < sort_columns_size; ++i)
         sort_description.emplace_back(header.getPositionByName(sort_columns[i]), 1, 1);
 
@@ -885,7 +1015,13 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataMergerMutator::mergePartsToTempor
     /// If merge is vertical we cannot calculate it
     bool blocks_are_granules_size = (chosen_merge_algorithm == MergeAlgorithm::Vertical);
 
+    /** The same, but for merge operations. Less DEFAULT_BLOCK_SIZE for saving RAM (since all the columns are read).
+      * Significantly less, since there are 10-way mergers.
+      */
+    /// #define DEFAULT_MERGE_BLOCK_SIZE 8192
+    /// M(UInt64, merge_max_block_size, DEFAULT_MERGE_BLOCK_SIZE, "How many rows in blocks should be formed for merge operations.", 0)
     UInt64 merge_block_size = data_settings->merge_max_block_size;
+
     switch (merging_params.mode)
     {
         case MergeTreeData::MergingParams::Ordinary:
