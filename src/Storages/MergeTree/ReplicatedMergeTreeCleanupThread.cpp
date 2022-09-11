@@ -29,6 +29,9 @@ ReplicatedMergeTreeCleanupThread::ReplicatedMergeTreeCleanupThread(StorageReplic
 
 void ReplicatedMergeTreeCleanupThread::run()
 {
+    /// M(UInt64, cleanup_delay_period, 30, "Period to clean old queue logs, blocks hashes and parts.", 0)
+    /// M(UInt64, cleanup_delay_period_random_add, 10, "Add uniformly distributed value from 0 to x seconds to cleanup_delay_period to avoid thundering herd effect and subsequent DoS of ZooKeeper in case of very large number of tables.", 0)
+    /// 30 ~  40s
     auto storage_settings = storage.getSettings();
     const auto sleep_ms = storage_settings->cleanup_delay_period * 1000
         + std::uniform_int_distribution<UInt64>(0, storage_settings->cleanup_delay_period_random_add * 1000)(rng);
@@ -111,6 +114,9 @@ void ReplicatedMergeTreeCleanupThread::clearOldLogs()
         return;
 
     std::sort(entries.begin(), entries.end());
+
+    /// M(UInt64, max_replicated_logs_to_keep, 1000, "How many records may be in log, if there is inactive replica. Inactive replica becomes lost when when this number exceed.", 0)
+    /// M(UInt64, min_replicated_logs_to_keep, 10, "Keep about this number of last records in ZooKeeper log, even if they are obsolete. It doesn't affect work of tables: used only to diagnose ZooKeeper log before cleaning.", 0)
 
     String min_saved_record_log_str = entries[
         entries.size() > storage_settings->max_replicated_logs_to_keep

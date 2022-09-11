@@ -38,8 +38,18 @@ IMergingAlgorithm::Status ReplacingSortedAlgorithm::merge()
     /// Take the rows in needed order and put them into `merged_columns` until rows no more than `max_block_size`
     while (queue.isValid())
     {
+        /// merging order segment of part
+        /// optimized_insert one part with permutation
         SortCursor current = queue.current();
 
+        /** Determines order if comparing columns are equal.
+         * Order is determined by number of cursor.
+         *
+         * Cursor number (always?) equals to number of merging part.
+         * Therefore this field can be used to determine part number of current row (see ColumnGathererStream).
+         */
+
+        /// bool isLast() const { return pos + 1 >= rows; }
         if (current->isLast() && skipLastRowFor(current->order))
         {
             /// Get the next block from the corresponding source, if there is one.
@@ -47,8 +57,20 @@ IMergingAlgorithm::Status ReplacingSortedAlgorithm::merge()
             return Status(current.impl->order);
         }
 
+        /// using RowRef = detail::RowRefWithOwnedChunk;
+
+        /// RowRefWithOwnedChunk
+        /// This class also represents a row in a chunk.
+        /// RowRefWithOwnedChunk hold shared pointer to this chunk, possibly extending its life time.
+        /// It is needed, for example, in CollapsingTransform, where we need to store first negative row for current sort key.
+        /// We do not copy data itself, because it may be potentially changed for each row. Performance for `set` is important.
+//        struct RowRefWithOwnedChunk
+//        {}
         RowRef current_row;
         setRowRef(current_row, current);
+
+        /// RowRef selected_row; /// Last row with maximum version for current primary key.
+        /// size_t max_pos = 0; /// The position (into current_row_sources) of the row with the highest version.
 
         bool key_differs = selected_row.empty() || !current_row.hasEqualSortColumnsWith(selected_row);
         if (key_differs)
