@@ -323,6 +323,7 @@ StreamsWithMarks MergeTreeDataPartWriterWide::getCurrentMarksForColumn(
         Stream & stream = *column_streams[stream_name];
 
         /// There could already be enough data to compress into the new block.
+        ///  M(UInt64, min_compress_block_size, 65536, "The actual size of the block to compress, if the uncompressed data less than max_compress_block_size is no less than this value and no less than the volume of data for one mark.", 0)
         if (stream.compressed.offset() >= settings.min_compress_block_size)
             stream.compressed.next();
 
@@ -346,6 +347,24 @@ void MergeTreeDataPartWriterWide::writeSingleGranule(
     const Granule & granule)
 {
     const auto & serialization = serializations[name_and_type.name];
+    /** 'offset' and 'limit' are used to specify range.
+     * limit = 0 - means no limit.
+     * offset must be not greater than size of column.
+     * offset + limit could be greater than size of column
+     *  - in that case, column is serialized till the end.
+     */
+
+//    void ISerialization::serializeBinaryBulkWithMultipleStreams(
+//        const IColumn & column,
+//        size_t offset,
+//        size_t limit,
+//        SerializeBinaryBulkSettings & settings,
+//        SerializeBinaryBulkStatePtr & /* state */) const
+//    {
+//        if (WriteBuffer * stream = settings.getter(settings.path))
+//            serializeBinaryBulk(column, *stream, offset, limit);
+//    }
+
     serialization->serializeBinaryBulkWithMultipleStreams(column, granule.start_row, granule.rows_to_write, serialize_settings, serialization_state);
 
     /// So that instead of the marks pointing to the end of the compressed block, there were marks pointing to the beginning of the next one.
@@ -374,12 +393,37 @@ void MergeTreeDataPartWriterWide::writeColumn(
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Empty granules for column {}, current mark {}", backQuoteIfNeed(name_and_type.name), getCurrentMark());
 
     const auto & [name, type] = name_and_type;
+
+//    using SerializeBinaryBulkStatePtr = std::shared_ptr<SerializeBinaryBulkState>;
+//    using SerializationState = ISerialization::SerializeBinaryBulkStatePtr;
+//    using SerializationStates = std::unordered_map<String, SerializationState>;
+//
+//    SerializationStates serialization_states;
+
     auto [it, inserted] = serialization_states.emplace(name, nullptr);
+
+    LOG_DEBUG(&Poco::Logger::get("MergeTreeDataPartWriterWide"), "writeColumn serialization_states map column name {}, inserted {}" , name, inserted);
 
     if (inserted)
     {
+//        struct SerializeBinaryBulkSettings
+//        {
+//            OutputStreamGetter getter;
+//            SubstreamPath path;
+//
+//            size_t low_cardinality_max_dictionary_size = 0;
+//            bool low_cardinality_use_single_dictionary_for_part = true;
+//
+//            bool position_independent_encoding = true;
+//        };
+
         ISerialization::SerializeBinaryBulkSettings serialize_settings;
         serialize_settings.getter = createStreamGetter(name_and_type, offset_columns);
+
+//        using SerializationsMap = std::unordered_map<String, SerializationPtr>;
+//        SerializationsMap serializations;
+
+        /// serializeBinaryBulkStatePrefix: Call before serializeBinaryBulkWithMultipleStreams chain to write something before first mark.
         serializations[name]->serializeBinaryBulkStatePrefix(serialize_settings, it->second);
     }
 
@@ -397,8 +441,33 @@ void MergeTreeDataPartWriterWide::writeColumn(
 
         if (granule.mark_on_start)
         {
+            /// Non written marks to disk (for each column). Waiting until all rows for
+            /// this marks will be written to disk.
+
+            /// using MarksForColumns = std::unordered_map<String, StreamsWithMarks>;
+            /// MarksForColumns last_non_written_marks;
+
+//            struct StreamNameAndMark
+//            {
+//                String stream_name;
+//                MarkInCompressedFile mark;
+//            };
+//
+//            using StreamsWithMarks = std::vector<StreamNameAndMark>;
+
+            /** Mark is the position in the compressed file. The compressed file consists of adjacent compressed blocks.
+              * Mark is a tuple - the offset in the file to the start of the compressed block, the offset in the decompressed block to the start of the data.
+              */
+//            struct MarkInCompressedFile
+//            {
+//                size_t offset_in_compressed_file;
+//                size_t offset_in_decompressed_block;
+//            }
+
             if (last_non_written_marks.count(name))
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "We have to add new mark for column, but already have non written mark. Current mark {}, total marks {}, offset {}", getCurrentMark(), index_granularity.getMarksCount(), rows_written_in_last_mark);
+
+            /// Take offsets from column and return as MarkInCompressed file with stream name
             last_non_written_marks[name] = getCurrentMarksForColumn(name_and_type, offset_columns, serialize_settings.path);
         }
 
@@ -567,6 +636,8 @@ void MergeTreeDataPartWriterWide::finishDataSerialization(IMergeTreeDataPart::Ch
         adjustLastMarkIfNeedAndFlushToDisk(rows_written_in_last_mark);
     }
 
+    /// M(Bool, write_final_mark, 1, "Write final mark after end of column (0 - disabled, do nothing if index_granularity_bytes=0)", 0)
+    /// with_final_mark(storage.getSettings()->write_final_mark && settings.can_use_adaptive_granularity)
     bool write_final_mark = (with_final_mark && data_written);
 
     {
@@ -609,6 +680,10 @@ void MergeTreeDataPartWriterWide::finishDataSerialization(IMergeTreeDataPart::Ch
 void MergeTreeDataPartWriterWide::finish(IMergeTreeDataPart::Checksums & checksums, bool sync)
 {
     // If we don't have anything to write, skip finalization.
+
+    /// finishDataSerialization
+    /// Finish serialization of data: write final mark if required and compute checksums
+    /// Also validate written data in debug mode
     if (!columns_list.empty())
         finishDataSerialization(checksums, sync);
 

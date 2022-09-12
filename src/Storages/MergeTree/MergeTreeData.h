@@ -653,6 +653,8 @@ public:
     virtual bool canUseAdaptiveGranularity() const
     {
         const auto settings = getSettings();
+        /// M(UInt64, index_granularity_bytes, 10 * 1024 * 1024, "Approximate amount of bytes in single granule (0 - disabled).", 0)
+        /// M(Bool, enable_mixed_granularity_parts, 1, "Enable parts with adaptive and non adaptive granularity", 0)
         return settings->index_granularity_bytes != 0 &&
             (settings->enable_mixed_granularity_parts || !has_non_adaptive_index_granularity_parts);
     }

@@ -329,6 +329,8 @@ NamesAndTypesList MergeTreePartition::executePartitionByExpression(const Storage
 {
     auto adjusted_partition_key = adjustPartitionKey(metadata_snapshot, context);
     adjusted_partition_key.expression->execute(block);
+
+    /// Sample block with key columns (names, types, empty column)
     return adjusted_partition_key.sample_block.getNamesAndTypesList();
 }
 

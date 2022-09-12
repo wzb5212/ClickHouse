@@ -155,7 +155,7 @@ IMergingAlgorithm::Status MergingSortedAlgorithm::mergeImpl(TSortingHeap & queue
          * Cursor number (always?) equals to number of merging part.
          * Therefore this field can be used to determine part number of current row (see ColumnGathererStream).
          */
-        size_t order = 0;
+//        size_t order = 0;
 
         /// It is a flag which says that last row from chunk should be ignored in result.
         /// This row is not ignored in sorting and is needed to synchronize required source

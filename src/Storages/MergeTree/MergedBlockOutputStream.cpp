@@ -24,6 +24,22 @@ MergedBlockOutputStream::MergedBlockOutputStream(
     , columns_list(columns_list_)
     , default_codec(default_codec_)
 {
+    /// index_granularity_info
+    /// Meta information about index granularity
+    //struct MergeTreeIndexGranularityInfo
+    //{
+    //public:
+    //    /// Marks file extension '.mrk' or '.mrk2'
+    //    String marks_file_extension;
+    //
+    //    /// Is stride in rows between marks non fixed?
+    //    bool is_adaptive = false;
+    //
+    //    /// Fixed size in rows of one granule if index_granularity_bytes is zero
+    //    size_t fixed_index_granularity = 0;
+    //
+    //    /// Approximate bytes size of one granule
+    //    size_t index_granularity_bytes = 0;
     MergeTreeWriterSettings writer_settings(
         storage.getContext()->getSettings(),
         storage.getSettings(),

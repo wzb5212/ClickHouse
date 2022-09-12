@@ -319,6 +319,8 @@ void TCPHandler::runImpl()
             if (state.io.out)
             {
                 state.need_receive_data_for_insert = true;
+
+                /// Process INSERT query
                 processInsertQuery(connection_settings);
             }
             else if (state.need_receive_data_for_input) // It implies pipeline execution

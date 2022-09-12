@@ -163,8 +163,13 @@ BlocksWithPartition MergeTreeDataWriter::splitBlockIntoParts(
 
     Block block_copy = block;
     /// After expression execution partition key columns will be added to block_copy with names regarding partition function.
+    /// partition by toYYYYMMDD(log_time)
+    /// partition by (toYYYYMMDD(log_time), app_id)
+
+    /// return NamesAndTypesList
     auto partition_key_names_and_types = MergeTreePartition::executePartitionByExpression(metadata_snapshot, block_copy, context);
 
+    /// using ColumnRawPtrs = std::vector<const IColumn *>;
     ColumnRawPtrs partition_columns;
     partition_columns.reserve(partition_key_names_and_types.size());
     for (const auto & element : partition_key_names_and_types)
@@ -345,6 +350,13 @@ Block MergeTreeDataWriter::mergeBlock(const Block & block, SortDescription sort_
 MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     BlockWithPartition & block_with_partition, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
 {
+    /// Block
+    /** Container for set of columns for bunch of rows in memory.
+      * This is unit of data processing.
+      * Also contains metadata - data types of columns and their names
+      *  (either original names from a table, or generated names during temporary calculations).
+      * Allows to insert, remove columns in arbitrary position, to change order of columns.
+      */
     Block & block = block_with_partition.block;
 
     static const String TMP_PREFIX = "tmp_insert_";
@@ -372,6 +384,7 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
 //    {
 //        Row value;
 //    }
+    /// using Row = std::vector<Field>;
     MergeTreePartition partition(std::move(block_with_partition.partition));
 
     /// Information about partition and the range of blocks contained in the part.
@@ -582,7 +595,7 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     /** To write one part.
       * The data refers to one partition, and is written in one part.
       */
-    /// create direction .bin, .mrk, primary.idx, min_max.idx, skip.idx2
+    /// create direction primary.idx, skip.idx ..., skip.mrk(mrk\mrk2\mrk3), column.bin, column.mrk(mrk\mrk2\mrk3)
     MergedBlockOutputStream out(new_data_part, metadata_snapshot, columns, index_factory.getMany(metadata_snapshot->getSecondaryIndices()), compression_codec);
     /// M(Bool, fsync_after_insert, false, "Do fsync for every inserted part. Significantly decreases performance of inserts, not recommended to use with wide parts.", 0)
     bool sync_on_insert = data.getSettings()->fsync_after_insert;
@@ -594,12 +607,11 @@ MergeTreeData::MutableDataPartPtr MergeTreeDataWriter::writeTempPart(
     /** If the data is not sorted, but we pre-calculated the permutation, after which they will be sorted.
     * This method is used to save RAM, since you do not need to keep two blocks at once - the source and the sorted.
     */
-    /// write memory: col.bin, col.mrk, primary.idx, skip.idx2
-    ///
+    /// write memory: column.bin, column.mrk, primary.idx, skip.idx, skip.mrk
     out.writeWithPermutation(block, perm_ptr);
 
     /// Finalize writing part and fill inner structures
-    /// flush disk: col.bin, col.mrk, primary.idx, skip.idx2
+    /// flush disk: column.bin, column.mrk, primary.idx, skip.idx, skip.mrk
     /// write memory and flush disk: min_max.idx, count.txt, ttl.txt, columns.txt, checksums.txt
     out.writeSuffixAndFinalizePart(new_data_part, sync_on_insert);
 
